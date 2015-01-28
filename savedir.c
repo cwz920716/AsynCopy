@@ -18,7 +18,7 @@
 
 /* Written by David MacKenzie <djm@gnu.ai.mit.edu>. */
 
-#include <config.h>
+#include "config.h"
 
 #include "savedir.h"
 
