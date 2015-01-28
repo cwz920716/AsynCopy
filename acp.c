@@ -13,41 +13,43 @@
 #include <error.h>
 #include <stddef.h>
 
-
-#define NAMLEN(dirent) strlen((dirent)->d_name)
-
 #define NLOGS (500)
 
 int log_next;
 
+typedef enum {UNASSIGNED, PULLING, PULLED, PUSHING, PUSHED} op_state_t;
+typedef enum {INVALID, META, DATA, END} state_t;
+
+typedef struct {
+  op_state_t state;
+  char *buf;
+  size_t nbytes;
+  off_t offset;
+  int ret; // return code
+} async_op_t;
+
+typedef async_op_t *async_op_ptr;
+
 typedef struct {
   int srcfd;
   int dstfd;
-  ino_t src_ino;
-  char *buf;
-  off_t offset;
-  int started;
-  int finished;
-} logentry_t;
+  struct stat sb; // stat block for src
+  async_op cop; // current assigned op
+  // global state: ALWAYS SEQUENTIAL READ/WRITE
+  state_t state;
+  off_t pos;
+} log_entry_t;
 
-logentry_t logs[NLOGS];
+typedef log_entry_t *log_entry_ptr;
 
-
-static int logentry_cmp_inode (void const *a, void const *b)
-{
-  logentry_t const *dea = a;
-  logentry_t const *deb = b;
-
-  return dea->src_ino < deb->src_ino ? -1 : dea->src_ino > deb->src_ino;
-}
+log_entry_t logs[NLOGS];
+int log_next;
 
 void metaRead (char *src, char *dst, int fd);
 
-void meta_readdir (char *src_name_in, char *dst_name_in, struct stat *src_sb, int fd) {
+void mfc_dir (char *src_name_in, char *dst_name_in, struct stat *src_sb) {
   char *name_space;
   char *namep;
-
-  // printf("read dir(): src_name: %s \n", src_name_in);
 
   mkdir(dst_name_in, src_sb->st_mode);
 
@@ -55,13 +57,14 @@ void meta_readdir (char *src_name_in, char *dst_name_in, struct stat *src_sb, in
   if (name_space == NULL) {
       /* This diagnostic is a bit vague because savedir can fail in
          several different ways.  */
-      return;
+      perror("read directory failed.");
+      abort();
   }
 
   namep = name_space;
   while (*namep != '\0') {
       int fn_length = strlen (namep) + 1;
-      char *src_name = malloc (strlen (src_name_in) + fn_length + 1);
+      char *src_name = xmalloc (strlen (src_name_in) + fn_length + 1);
       stpcpy (stpcpy (stpcpy (src_name, src_name_in), "/"), namep);
       // char *src_name = file_name_concat (src_name_in, namep, NULL);
       char *dst_name = malloc (strlen (dst_name_in) + fn_length + 1);
@@ -122,28 +125,20 @@ void meta_readreg (char *src_name, char *dst_name) {
 
 }
 
-void metaRead (char *src, char *dst, int fd) {
+void meta_first_copy (char *src, char *dst) {
   struct stat src_sb;
   mode_t src_mode;
-  // printf("read meta(): src: %s dst: %s \n", src, dst);
-
-  // char log[1024] = "";
 
   lstat (src, &src_sb);
   src_mode = src_sb.st_mode;
 
   if (S_ISDIR(src_mode)) {
-    meta_readdir(src, dst, &src_sb, fd);
-    // sprintf(log, "%s D %s\n", src, dst);
+    mfc_dir(src, dst, &src_sb, fd);
   }
 
   if (S_ISREG(src_mode)) {
-    meta_readreg(src, dst);
-    // sprintf(log, "%s %s R\n", src, dst);
+    mfc_reg(src, dst);
   }
-
-  // write(fd, log, strlen(log));
-
 }
 
 int main(int argc, char **argv) {
@@ -153,13 +148,11 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  int fd = open (DIR_CONF, O_WRONLY | O_CREAT | O_TRUNC, 0777);
-
   char *src = argv[1];
   char *dst = argv[2];
 
   log_next = 0;
-  metaFirstCopy (src, dst, fd);
+  meta_first_copy (src, dst);
   log_flush();
 
   close(fd);
