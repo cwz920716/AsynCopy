@@ -1,7 +1,6 @@
-/* Report a memory allocation failure and exit.
+/* Invoke dup, but avoid some glitches.
 
-   Copyright (C) 1997-2000, 2002-2004, 2006, 2009-2014 Free Software
-   Foundation, Inc.
+   Copyright (C) 2001, 2004-2006, 2009-2014 Free Software Foundation, Inc.
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,21 +15,20 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
+/* Written by Paul Eggert.  */
+
 #include "config.h"
 
-#include "xalloc.h"
+#include "unistd-safer.h"
 
-#include <stdlib.h>
-#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
 
-void
-xalloc_die (void)
+/* Like dup, but do not return STDIN_FILENO, STDOUT_FILENO, or
+   STDERR_FILENO.  */
+
+int
+dup_safer (int fd)
 {
-  perror ("memory exhausted");
-
-  /* _Noreturn cannot be given to error, since it may return if
-     its first argument is 0.  To help compilers understand the
-     xalloc_die does not return, call abort.  Also, the abort is a
-     safety feature if exit_failure is 0 (which shouldn't happen).  */
-  abort ();
+  return fcntl (fd, F_DUPFD, STDERR_FILENO + 1);
 }

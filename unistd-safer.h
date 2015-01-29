@@ -1,7 +1,6 @@
-/* Report a memory allocation failure and exit.
+/* Invoke unistd-like functions, but avoid some glitches.
 
-   Copyright (C) 1997-2000, 2002-2004, 2006, 2009-2014 Free Software
-   Foundation, Inc.
+   Copyright (C) 2001, 2003, 2005, 2009-2014 Free Software Foundation, Inc.
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,21 +15,17 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#include "config.h"
+/* Written by Paul Eggert and Eric Blake.  */
 
-#include "xalloc.h"
+int dup_safer (int);
+int fd_safer (int);
+int pipe_safer (int[2]);
 
-#include <stdlib.h>
-#include <stdio.h>
+#if GNULIB_FD_SAFER_FLAG
+int dup_safer_flag (int, int);
+int fd_safer_flag (int, int);
+#endif
 
-void
-xalloc_die (void)
-{
-  perror ("memory exhausted");
-
-  /* _Noreturn cannot be given to error, since it may return if
-     its first argument is 0.  To help compilers understand the
-     xalloc_die does not return, call abort.  Also, the abort is a
-     safety feature if exit_failure is 0 (which shouldn't happen).  */
-  abort ();
-}
+#if GNULIB_PIPE2_SAFER
+int pipe2_safer (int[2], int);
+#endif

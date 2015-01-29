@@ -1,6 +1,6 @@
-/* Report a memory allocation failure and exit.
+/* dirname.c -- return all but the last element in a file name
 
-   Copyright (C) 1997-2000, 2002-2004, 2006, 2009-2014 Free Software
+   Copyright (C) 1990, 1998, 2000-2001, 2003-2006, 2009-2014 Free Software
    Foundation, Inc.
 
    This program is free software: you can redistribute it and/or modify
@@ -18,19 +18,21 @@
 
 #include "config.h"
 
-#include "xalloc.h"
+#include "dirname.h"
 
 #include <stdlib.h>
-#include <stdio.h>
+#include <string.h>
+#include "xalloc.h"
 
-void
-xalloc_die (void)
+/* Just like mdir_name (dirname-lgpl.c), except, rather than
+   returning NULL upon malloc failure, here, we report the
+   "memory exhausted" condition and exit.  */
+
+char *
+dir_name (char const *file)
 {
-  perror ("memory exhausted");
-
-  /* _Noreturn cannot be given to error, since it may return if
-     its first argument is 0.  To help compilers understand the
-     xalloc_die does not return, call abort.  Also, the abort is a
-     safety feature if exit_failure is 0 (which shouldn't happen).  */
-  abort ();
+  char *result = mdir_name (file);
+  if (!result)
+    xalloc_die ();
+  return result;
 }

@@ -1,7 +1,6 @@
-/* Report a memory allocation failure and exit.
-
-   Copyright (C) 1997-2000, 2002-2004, 2006, 2009-2014 Free Software
-   Foundation, Inc.
+/* Duplicate a bounded initial segment of a string, with out-of-memory
+   checking.
+   Copyright (C) 2003, 2009-2014 Free Software Foundation, Inc.
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,21 +15,9 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#include "config.h"
+#include <stddef.h>
 
-#include "xalloc.h"
-
-#include <stdlib.h>
-#include <stdio.h>
-
-void
-xalloc_die (void)
-{
-  perror ("memory exhausted");
-
-  /* _Noreturn cannot be given to error, since it may return if
-     its first argument is 0.  To help compilers understand the
-     xalloc_die does not return, call abort.  Also, the abort is a
-     safety feature if exit_failure is 0 (which shouldn't happen).  */
-  abort ();
-}
+/* Return a newly allocated copy of at most N bytes of STRING.
+   In other words, return a copy of the initial segment of length N of
+   STRING.  */
+extern char *xstrndup (const char *string, size_t n);

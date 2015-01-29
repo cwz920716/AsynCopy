@@ -18,6 +18,7 @@
 #ifndef XALLOC_H_
 #define XALLOC_H_
 
+#include "config.h"
 #include <stddef.h>
 
 #include "xalloc-oversized.h"

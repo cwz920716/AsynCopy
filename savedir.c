@@ -19,6 +19,7 @@
 /* Written by David MacKenzie <djm@gnu.ai.mit.edu>. */
 
 #include "config.h"
+#include "xalloc.h"
 
 #include "savedir.h"
 
