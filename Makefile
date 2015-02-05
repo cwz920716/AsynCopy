@@ -1,5 +1,5 @@
 RM = rm -f
-CC = gcc -Wall
+CC = gcc -Wall -O4
 RUN = ./a.out
 
 # the build dependency:

@@ -69,7 +69,7 @@ typedef struct {
 typedef log_entry_t *log_entry_ptr;
 
 // global vars
-#define NASYN (64) 
+#define NASYN (500) 
 #define NLOGS (NASYN)
 log_entry_t logs[NLOGS];
 int log_next;
@@ -111,10 +111,16 @@ void mfc_dir (char *src_name_in, char *dst_name_in, struct stat *src_sb) {
 }
 
 static void log_flush() {
-  int i, j, submit = 0, ret, finished = 0, nr = 0;
+  int i, j, submit = 0, ret, finished = 0, nr = 0, nor = 0, cur = 0;
   while (1) {
     finished = 1;
-    for (i = 0; i < NLOGS; i++) {
+    nor = 0;
+    struct iocb *cbsubmit[NASYN];
+    for (;cur < NLOGS;cur++) {
+      // printf("cur = %d\n", cur);
+      i = cur;
+      if (nor > 128)
+        break;
       async_op_ptr opp = &logs[i].cop;
 
       submit = 0;
@@ -147,35 +153,44 @@ static void log_flush() {
         logs[i].cop.state = IDLE;
       }
 
-      struct iocb *cbp = &cbs[i];
-      if (submit == 1) {
+      if (submit) {
+        cbsubmit[nor] = &cbs[i];
+        nor++;
         nr++;
+        if (opp->state == IDLE) 
+          opp->state = READ;
+        else
+          opp->state = WRITE;
+        }
+
+      }
+    
+      if (cur >= NLOGS)
+        cur = 0;
+
+      if (nor > 0) {
+        // printf("subm nor = %d\n", nor);
         // printf("submit r?%d, %llu %llu\n", (cbs[i].aio_lio_opcode == IOCB_CMD_PREAD), cbs[i].aio_offset, cbs[i].aio_nbytes);
-        ret = io_submit(ctx, 1, &cbp);
-        if (ret < 0) { 
-          perror ("io_submit retVal < 0.\n");
+        ret = io_submit(ctx, nor, cbsubmit);
+        if (ret < nor) { 
+          perror ("io_submit retVal < nor.\n");
           abort ();
         }
-        if (ret == 1) {
-          if (opp->state == IDLE) 
-            opp->state = READ;
-          else
-            opp->state = WRITE;
-        }
       } 
-    }
     // io_getevents
     if (nr > 0) {
       struct io_event events[NASYN];
       struct timespec to;
-      to.tv_sec = 1;
-      ret = io_getevents(ctx, 1, NASYN, events, &to);
+      to.tv_nsec = 0;
+      to.tv_sec = 0;
+      ret = io_getevents(ctx, 1, 64, events, &to);
       if (ret < 0) { 
         perror ("io_getevents retVal < 0.\n");
         abort ();
       }
 
       if (ret > 0) {
+        // printf("gete ret = %d\n", ret);
         nr -= ret;
         for (i = 0; i < ret; i++) {
           struct io_event ev = events[i];
@@ -196,7 +211,7 @@ static void log_flush() {
 
               } else {
                 if (opp->nbytes != ev.res) {
-                  perror ("write early return.\n");
+                  // perror ("write early return.\n");
                   abort ();
                 }
 
