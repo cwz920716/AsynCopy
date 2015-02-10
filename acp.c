@@ -74,7 +74,7 @@ typedef log_entry_t *log_entry_ptr;
 log_entry_t logs[NLOGS];
 int log_next;
 aio_context_t ctx = 0;
-#define PAGE_SIZE (4096)
+#define PAGE_SIZE (4096 * 4)
 struct iocb cbs[NASYN];
 void **bufs[NASYN];
 
