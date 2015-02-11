@@ -64,28 +64,118 @@ typedef struct {
   // global state: ALWAYS SEQUENTIAL READ/WRITE
   state_t state;
   off_t pos;
+  void *buf;
 } log_entry_t;
 
 typedef log_entry_t *log_entry_ptr;
 
+#define NAMELEN (128)
+
+typedef struct {
+  char srcName[NAMELEN + 1];
+  char dstName[NAMELEN + 1];
+  pthread_t thread;
+  int valid;
+  int marked;
+} dir_entry_t;
+
+typedef dir_entry_t *dir_entry_ptr;
+
 // global vars
-#define NASYN (500) 
-#define NLOGS (NASYN)
-log_entry_t logs[NLOGS];
-int log_next;
-aio_context_t ctx = 0;
+#define NTHREADS (16) 
+#define NDIRS (1024 * 4)
 #define PAGE_SIZE (4096 * 4)
-struct iocb cbs[NASYN];
-void **bufs[NASYN];
 
-void mfc_reg (char *src_name, char *dst_name);
-void meta_first_copy (char *src, char *dst);
+dir_entry_t fifo_dirs[NDIRS]; // a straight line queue buffer, never circular
+int enqP, deqP, markP, cnt;
 
-void mfc_dir (char *src_name_in, char *dst_name_in, struct stat *src_sb) {
+void fifo_init() {
+  enqP = deqP = markP = cnt = 0;
+}
+
+int fifo_canWalk() {
+  return enqP > markP;
+}
+
+int fifo_canDeq() {
+  return markP > deqP;
+}
+
+void fifo_enq(char *src, char *dst) {
+
+  if (enqP >= NDIRS) {
+    perror("Linear Directory Queue too small!\n");
+    abort();
+  }
+
+  if (strlen(src) > NAMELEN || strlen(dst) > NAMELEN) {
+    perror("fifo_enq() too long name\n");
+    abort();
+  }
+
+  dir_entry_ptr p = fifo_dirs + enqP;
+  strcpy(p->srcName, src);
+  strcpy(p->dstName, dst);
+  p->valid = 1;
+  p->marked = 0;
+  enqP++;
+}
+
+dir_entry_ptr fifo_walk() {
+
+  dir_entry_ptr p = fifo_dirs + markP;
+
+  if (markP >= enqP || !p->valid) {
+    perror("walk an inValid Node!\n");
+    abort();
+  }
+
+  if (!p->marked)
+    p->marked = 1;
+  else {
+    printf("Walk into a marked node!\n");
+    abort();
+  }
+
+  markP++;
+  return p;
+}
+
+dir_entry_ptr fifo_first() {
+
+  dir_entry_ptr p = fifo_dirs + deqP;
+
+  if (deqP >= markP || !p->marked) {
+    perror("First() an unmarked Node!\n");
+    abort();
+  }
+
+  return p;
+}
+
+void fifo_deq() {
+
+  dir_entry_ptr p = fifo_dirs + deqP;
+
+  if (p->valid)
+    p->valid = 0;
+  else  {
+    perror("Deq() an inValid Node!\n");
+    abort();
+  }
+
+  deqP++;
+}
+
+void visit_dir (char *src_name_in, char *dst_name_in) {
   char *name_space;
   char *namep;
+  struct stat src_sb;
 
-  mkdir(dst_name_in, src_sb->st_mode);
+  printf("Visiting %s\n", src_name_in);
+
+  lstat(src_name_in, &src_sb);
+  mkdir(dst_name_in, src_sb.st_mode);
 
   name_space = savedir (src_name_in, SAVEDIR_SORT_FASTREAD);
   if (name_space == NULL) {
@@ -99,8 +189,16 @@ void mfc_dir (char *src_name_in, char *dst_name_in, struct stat *src_sb) {
   while (*namep != '\0') {
       char *src_name = file_name_concat (src_name_in, namep, NULL);
       char *dst_name = file_name_concat (dst_name_in, namep, NULL);
+      struct stat src_sb;
+      mode_t src_mode;
 
-      meta_first_copy (src_name, dst_name);
+      lstat (src_name, &src_sb);
+      src_mode = src_sb.st_mode;
+
+      if (S_ISDIR(src_mode)) {
+          fifo_enq(src_name, dst_name);
+      }
+
       free (src_name);
       free (dst_name);
       namep += strlen (namep) + 1;
@@ -110,196 +208,30 @@ void mfc_dir (char *src_name_in, char *dst_name_in, struct stat *src_sb) {
   return;
 }
 
-static void log_flush() {
-  int i, j, submit = 0, ret, finished = 0, nr = 0, nor = 0, cur = 0;
-  while (1) {
-    finished = 1;
-    nor = 0;
-    struct iocb *cbsubmit[NASYN];
-    for (;cur < NLOGS;cur++) {
-      // printf("cur = %d\n", cur);
-      i = cur;
-      if (nor > 128)
-        break;
-      async_op_ptr opp = &logs[i].cop;
-
-      submit = 0;
-      if (logs[i].state == END || logs[i].state == INVALID)
-        continue;
-      
-      finished = 0;
-      if (opp->state == READ || opp->state == WRITE)
-        continue;
-
-      memset(&cbs[i], 0, sizeof(cbs[i]));
-      if (opp->state == IDLE) {
-        // submit a read request
-        cbs[i].aio_fildes =logs[i].srcfd;
-        cbs[i].aio_lio_opcode = IOCB_CMD_PREAD;
-        cbs[i].aio_buf = (uint64_t) bufs[i];
-        cbs[i].aio_offset = logs[i].pos;
-        cbs[i].aio_nbytes = PAGE_SIZE;
-        submit = 1;
-      } else if (opp->state == TRANSIT && !opp->eof) {
-        // submit a transit request
-        cbs[i].aio_fildes =logs[i].dstfd;
-        cbs[i].aio_lio_opcode = IOCB_CMD_PWRITE;
-        cbs[i].aio_buf = (uint64_t) bufs[i];
-        cbs[i].aio_offset = logs[i].pos;
-        cbs[i].aio_nbytes = opp->nbytes;
-        submit = 1;
-      } else if (opp->state == TRANSIT && opp->eof) {
-        logs[i].state = END;
-        logs[i].cop.state = IDLE;
-      }
-
-      if (submit) {
-        cbsubmit[nor] = &cbs[i];
-        nor++;
-        nr++;
-        if (opp->state == IDLE) 
-          opp->state = READ;
-        else
-          opp->state = WRITE;
-        }
-
-      }
-    
-      if (cur >= NLOGS)
-        cur = 0;
-
-      if (nor > 0) {
-        // printf("subm nor = %d\n", nor);
-        // printf("submit r?%d, %llu %llu\n", (cbs[i].aio_lio_opcode == IOCB_CMD_PREAD), cbs[i].aio_offset, cbs[i].aio_nbytes);
-        ret = io_submit(ctx, nor, cbsubmit);
-        if (ret < nor) { 
-          perror ("io_submit retVal < nor.\n");
-          abort ();
-        }
-      } 
-    // io_getevents
-    if (nr > 0) {
-      struct io_event events[NASYN];
-      struct timespec to;
-      to.tv_nsec = 0;
-      to.tv_sec = 0;
-      ret = io_getevents(ctx, 1, 64, events, &to);
-      if (ret < 0) { 
-        perror ("io_getevents retVal < 0.\n");
-        abort ();
-      }
-
-      if (ret > 0) {
-        // printf("gete ret = %d\n", ret);
-        nr -= ret;
-        for (i = 0; i < ret; i++) {
-          struct io_event ev = events[i];
-
-          for (j = 0; j < NASYN; j++)
-            if (cbs + j == (struct iocb *) ev.obj) {
- 
-              async_op_ptr opp = &logs[j].cop;
-              if (opp->state == READ) {
-                if (ev.res < 0) {
-                  printf ("read %lld return < 0.\n", ev.res);
-                  abort ();
-                }
-
-                opp->nbytes = ev.res;
-                opp->state = TRANSIT;
-                opp->eof = (ev.res == 0);
-
-              } else {
-                if (opp->nbytes != ev.res) {
-                  // perror ("write early return.\n");
-                  abort ();
-                }
-
-                opp->state = IDLE;
-                logs[j].pos += opp->nbytes;
-              }
-            }
-        }
-      }
-    }
-
-    // can I exit now ?
-    if (finished) {
-      break;
-    }
-  }
-
-   log_next = 0;
-   for (i = 0; i < NLOGS; i++) {
-     logs[i].state = INVALID;
-     close(logs[i].srcfd);
-     close(logs[i].dstfd);
-   }
-}
-
-void log_copy(int srcfd, int dstfd) {
-  // printf("log_copy %d\n", log_next);
-  struct stat sb;
-  fstat(srcfd, &sb);
-
-  if (NLOGS == 0) {
-    perror ("NLOGS Never Goto 0.");
-    abort ();
-  }
-
-  // NLOGS > 0
-
-  if (log_next < NLOGS) {
-    memset(&cbs[log_next], 0, sizeof(cbs[log_next]));
-    logs[log_next].srcfd = srcfd;
-    logs[log_next].dstfd = dstfd;
-    logs[log_next].sb = sb;
-    logs[log_next].state = DATA;
-    logs[log_next].cop.state = IDLE;
-    logs[log_next].cop.eof = 0;
-    logs[log_next].pos = SEEK_SET;
-    log_next++;
-    return;
-  } else {
-    log_flush();
-    log_copy (srcfd, dstfd);
-  }
-}
-
-void mfc_reg (char *src_name, char *dst_name) {
-  // struct stat src_sb;
-  // printf("read reg(): src_name: %s \n", src_name);
-
-  int srcfd = open(src_name, O_RDONLY);
-
-  int dstfd = open(dst_name, O_WRONLY | O_CREAT | O_TRUNC, 0777);
-
-  if (srcfd < 0 || dstfd < 0) {
-    perror("open: srcfd < 0 OR dstfd < 0.");
-    abort();
-  }
-
-  log_copy(srcfd, dstfd);
-}
-
-void meta_first_copy (char *src, char *dst) {
+void directory_walking (char *src, char *dst) {
   struct stat src_sb;
   mode_t src_mode;
 
   lstat (src, &src_sb);
   src_mode = src_sb.st_mode;
 
-  if (S_ISDIR(src_mode)) {
-    mfc_dir(src, dst, &src_sb);
+  printf("Walking %s and %s\n", src, dst);
+
+  if (!S_ISDIR(src_mode)) {
+    perror("walking: src is not dir!");
+    abort();
   }
 
-  if (S_ISREG(src_mode)) {
-    mfc_reg(src, dst);
+  fifo_enq(src, dst);
+  while (fifo_canWalk()) {
+    dir_entry_ptr p = fifo_walk();
+    visit_dir (p->srcName, p->dstName);
   }
+
 }
 
 int main(int argc, char **argv) {
-  int ret, i;
+  // int ret, i;
 
   if (argc < 3) {
     printf("bag input.\n");
@@ -309,19 +241,8 @@ int main(int argc, char **argv) {
   char *src = argv[1];
   char *dst = argv[2];
 
-  log_next = 0;
-  ctx = 0;
-  ret = io_setup(NASYN, &ctx);
-  if (ret < 0) {
-    perror ("io_setup failed.");
-    abort ();
-  }
-  for (i = 0; i < NASYN; i++) {
-    bufs[i] = xmalloc(PAGE_SIZE);
-  }
-
-  meta_first_copy (src, dst);
-  log_flush();
+  directory_walking (src, dst);
+  printf("%d %d %d\n", enqP, markP, deqP);
 
   return 0;
 }
